@@ -1,0 +1,2427 @@
+;/////////////////////////////////////////////////////////////////////////////////
+;// Code Generator: BoostC Compiler - http://www.sourceboost.com
+;// Version       : 8.01
+;// License Type  : Pro License
+;// Limitations   : PIC12,PIC16 max code size:Unlimited, max RAM banks:Unlimited
+;/////////////////////////////////////////////////////////////////////////////////
+
+////////////////////////////////////////////////////////////////////////////
+// LCD with HD44780 drive chip
+////////////////////////////////////////////////////////////////////////////
+// Author(s): David Hobday, Pavel Baranov
+// Date 15 November 2004
+//
+// Copyright(C) 2004-2010 Pavel Baranov
+// Copyright(C) 2004-2010 David Hobday
+// Copyright(C) 2004 Andrew Smallridge
+//
+//
+// How to use - by David Hobday
+// ============================
+// Remember when using LCD in 4 bit mode you must connect to the LCDs DB4-DB7 pins.
+//
+// *** For a list of functions, see the END of this file.
+//
+// The time delays used in the code should mean that it will work on PIC18 with 
+// 40MHz clock without any changes.
+//
+// The example below (which would work on a PIC16F84) operates the display 
+// in 4bit mode and requires the following connections:
+// RS  to RA3
+// R/W to RA2
+// E   to RA1
+// DB0 to None
+// DB1 to None
+// DB2 to None
+// DB3 to None
+// DB4 to RB4
+// DB5 to RB5
+// DB6 to RB6
+// DB7 to RB7
+//
+//
+// Add the following after #include <system.h> in you source file:
+//
+//#define LCD_ARGS 	2,	/* Interface type: mode 0 = 8bit, 1 = 4bit(low nibble), 2 = 4bit(upper nibble) */ \
+//		1, 				/* Use busy signal: 1 = use busy, 0 = use time delays */\
+//		PORTB, TRISB, 	/* Data port and data port tris register */ \
+//		PORTA, TRISA, 	/* Control port and control port tris register */ \
+//		3,				/* Bit number of control port is connected to RS */ \
+//		2,				/* Bit number of control port is connected to RW */ \
+//		1 				/* Bit number of control port is connected to Enable */
+//
+//#include <lcd_driver.h> // include the LCD template code
+//
+//
+// Revisions
+// =========
+//
+// V1.10 David Hobday 03/03/2005
+// =============================
+// 1) Improved documentation in file
+// 2) Changed delays to delay_10us for usage on target with clock <= 4MHz
+// 3) Changed template to make more friendly and obvious
+// 
+// V1.11 18/03/2005
+// David Hobday
+// 1) Fixed operation with PIC18 - template arguments of incorrect type
+// 2) Tested with PicDem2Plus board (4MHz PIC16F877/PIC18F452)
+// 3) Added lcd_gotoxy function.
+// 4) Added option to use display busy bit or time delays
+// 5) Added overloaded lprintf function for ROM string
+// 6) Added overloaded lprintf function to output numbers supported formats:
+//  "%d" - decimal
+//  "%X" - hex
+//  "%b" - binart
+//  example: display binary number six digits, '0' as file character.
+//  lprintf( "val:%06b", numb );
+// 7) Other improvements/cleanup.
+//
+//
+// V1.11 David Hobday 25/03/2005
+// =============================
+// 1) Fixed bug with lprintf( "test:%d", 0 ); not printing a 0.
+// 2) Added a few more comments in lprintf( const char*, int ) code
+// 
+//
+// V1.12 Jason Sobell 03/07/2005
+// =============================
+// 1) Fixed display of unsigned integers >32767
+//
+//
+// V1.13 David Hobday 08/07/2005
+// =============================
+// 1) Removed code that is no longer needed (as val is now unsigned).
+// 2) Tweaked Jason Sobell changes a little to reduce code size.
+//
+// 
+// V1.14 David Hobday 11/11/2005
+// =============================
+// 1) Changed lcd_gotoxy function so that it works as expected with 20 x 4 display
+//
+
+////////////////////////////////////////////////////////////////////////////
+
+char writeDelayType;
+
+////////////////////////////////////////////////////////////////////////////
+// LCD Commands ( Refer to LCD Data Sheet )
+////////////////////////////////////////////////////////////////////////////
+#define clear_lcd         		0x01 // Clear Display
+#define return_home       		0x02 // Cursor to Home position
+#define entry_mode        		0x06 // Normal entry mode
+#define entry_mode_rev    		0x04 // Normal entry mode  -reverse direction
+#define entry_mode_scroll 		0x07 // - with shift
+#define entry_mode_scroll_rev	0x05 // reverse direction
+
+#define system_set_8_bit  		0x38 // 8 bit data mode 2 line ( 5x7 font )
+#define system_set_4_bit  		0x28 // 4 bit data mode 2 line ( 5x7 font )
+#define system_set_reset  		0x30 // Reset code
+#define display_on        		0x0C // Display ON - 2 line mode
+#define display_off       		0x08 // Display off
+#define set_dd_line1      		0x80 // Line 1 position 1
+#define set_dd_line2      		0xC0 // Line 2 position 1
+#define set_dd_ram        		0x80 // Line 1 position 1
+#define write_data        		0x00 // With RS = 1
+#define cursor_on         		0x0E // Switch Cursor ON
+#define cursor_off        		0x0C // Switch Cursor OFF
+#define cursor_blink_on   		0x0F // Cursor plus blink
+#define cursor_shift_right		0x14 // Move cursor right
+#define cursor_shift_left 		0x10 // Move cursor left
+#define display_shift_right		0x1C // Scroll display right
+#define display_shift_left		0x18 // Scroll display left
+
+#define WriteNoDelay	1
+#define WriteControlled	0
+
+// Interface type
+#define LCD_8_BIT_MODE 0
+#define LCD_4_BIT_LO_NIB_MODE 1
+#define LCD_4_BIT_HI_NIB_MODE 2
+
+// These macros make susequent code more readable, but can seem a little confusing
+#define _LCD_RawWriteNibble LCD_RawWriteNibble	<InterfaceType, UseBusy, DataPort, Data_PortTris, CtrlPort, Ctrl_PortTris, RS, RW, E>
+#define _LCD_RawWriteNibbleInline  LCD_RawWriteNibbleInline	<InterfaceType, UseBusy, DataPort, Data_PortTris, CtrlPort, Ctrl_PortTris, RS, RW, E>
+#define _LCD_Read			LCD_Read			<InterfaceType, UseBusy, DataPort, Data_PortTris, CtrlPort, Ctrl_PortTris, RS, RW, E>
+#define _LCD_WaitForNotBusy	LCD_WaitForNotBusy	<InterfaceType, UseBusy, DataPort, Data_PortTris, CtrlPort, Ctrl_PortTris, RS, RW, E>
+#define _LCD_Write			LCD_Write			<InterfaceType, UseBusy, DataPort, Data_PortTris, CtrlPort, Ctrl_PortTris, RS, RW, E>
+#define _LCD_FunctionMode	LCD_FunctionMode	<InterfaceType, UseBusy, DataPort, Data_PortTris, CtrlPort, Ctrl_PortTris, RS, RW, E>
+#define _LCD_DataMode		LCD_DataMode		<InterfaceType, UseBusy, DataPort, Data_PortTris, CtrlPort, Ctrl_PortTris, RS, RW, E>
+#define _LCD_RawWrite		LCD_RawWrite		<InterfaceType, UseBusy, DataPort, Data_PortTris, CtrlPort, Ctrl_PortTris, RS, RW, E>
+#define _LCD_ClockOut		LCD_ClockOut		<InterfaceType, UseBusy, DataPort, Data_PortTris, CtrlPort, Ctrl_PortTris, RS, RW, E>
+
+#define _LCD_TEMPL		template <	unsigned char InterfaceType,\
+									unsigned char UseBusy,\
+									unsigned int DataPort, unsigned int Data_PortTris,\
+									unsigned int CtrlPort, unsigned int Ctrl_PortTris,\
+									unsigned char RS, unsigned char RW, unsigned char E>
+
+_LCD_TEMPL
+inline void LCD_FunctionMode( void )
+{
+	volatile bit rs@CtrlPort.RS = 0;
+}
+
+_LCD_TEMPL
+inline void LCD_DataMode( void )
+{
+	volatile bit rs@CtrlPort.RS = 1;
+}
+
+
+inline void LCD_CycleMakeupDelay()
+{
+	// Enable cycle time must be > 1000ns total for both reading and writing
+	// LCD_SetupDelay + LCD_EnablePulseDelay + LCD_HoldupDelay + LCD_CycleMakeupDelay >= 1000ns
+	//       200      +          500         +       100       +          200         >= 1000ns
+
+	// This delay is required to meet the Sharp data sheet total cycle time of > 1000ns
+	// @40MHz this is 2 instructions
+	asm nop 
+	asm nop	
+}
+
+
+inline void LCD_EnablePulseDelay()
+{		
+	// PWEH > 460ns on Sharp data sheet
+	// @40MHz this is 5 instructions
+	asm nop 
+	asm nop
+	asm nop
+	asm nop
+	asm nop
+}
+
+inline void LCD_SetupDelay()
+{
+	// tAS > 140ns min on Sharp data sheet
+	// @40MHz this is 2 instructions
+	asm nop 
+	asm nop
+}
+
+inline void LCD_HoldupDelay()
+{
+	// tAS > 10ns min on Sharp data sheet
+	// @40MHz this is 1 instructions
+	asm nop
+}
+
+
+
+_LCD_TEMPL
+char LCD_Read()
+
+{		
+	char d; 
+	volatile unsigned char data@DataPort, tris@Data_PortTris;
+	volatile bit rw@CtrlPort.RW, e@CtrlPort.E;
+	
+	if( InterfaceType == LCD_4_BIT_HI_NIB_MODE )
+
+	{
+		// upper nibble input
+		tris |= 0xF0;
+0048  30F0  	MOVLW 0xF0
+0049  1683  	BSF STATUS, RP0
+004A  1303  	BCF STATUS, RP1
+004B  0488  	IORWF LCD_Read_00000_1_tris, F
+
+		rw = 1; // set reading mode
+004C  1283  	BCF STATUS, RP0
+004D  1487  	BSF LCD_Read_00000_1_rw,1
+
+		// first high nibble	
+		LCD_SetupDelay();
+004E  0000  	NOP
+004F  0000  	NOP
+
+		e = 1;
+0050  1407  	BSF LCD_Read_00000_1_e,0
+
+		LCD_EnablePulseDelay();
+0051  0000  	NOP
+0052  0000  	NOP
+0053  0000  	NOP
+0054  0000  	NOP
+0055  0000  	NOP
+
+		d = data & 0xF0; // read data
+0056  30F0  	MOVLW 0xF0
+0057  0508  	ANDWF LCD_Read_00000_1_data, W
+0058  00C1  	MOVWF LCD_Read_00000_1_d
+
+		e = 0;
+0059  1007  	BCF LCD_Read_00000_1_e,0
+
+		LCD_HoldupDelay();
+005A  0000  	NOP
+
+		LCD_CycleMakeupDelay();
+005B  0000  	NOP
+005C  0000  	NOP
+
+			
+		// then low nibble
+		LCD_SetupDelay();
+005D  0000  	NOP
+005E  0000  	NOP
+
+		e = 1;
+005F  1407  	BSF LCD_Read_00000_1_e,0
+
+		LCD_EnablePulseDelay();
+0060  0000  	NOP
+0061  0000  	NOP
+0062  0000  	NOP
+0063  0000  	NOP
+0064  0000  	NOP
+
+		d |= data >> 4;
+0065  0E08  	SWAPF LCD_Read_00000_1_data, W
+0066  390F  	ANDLW 0x0F
+0067  04C1  	IORWF LCD_Read_00000_1_d, F
+
+		e = 0;
+0068  1007  	BCF LCD_Read_00000_1_e,0
+
+		LCD_HoldupDelay();
+0069  0000  	NOP
+
+		LCD_CycleMakeupDelay();
+006A  0000  	NOP
+006B  0000  	NOP
+
+	}
+
+
+	if( InterfaceType == LCD_4_BIT_LO_NIB_MODE )
+	{
+		// lower nibble input	
+		tris |= 0x0F;
+		rw = 1; // set reading mode
+		// first high nibble
+		LCD_SetupDelay();
+		e = 1;
+		LCD_EnablePulseDelay();
+		d = data << 4;
+		e = 0;
+		LCD_HoldupDelay();
+		LCD_CycleMakeupDelay();
+			
+		// then low nibble
+		LCD_SetupDelay();
+		e = 1;
+		LCD_EnablePulseDelay();	
+		d |= data & 0x0F;
+		e = 0;
+		LCD_HoldupDelay();
+		LCD_CycleMakeupDelay();
+	}
+
+
+	if( InterfaceType == LCD_8_BIT_MODE )
+	{
+		// port input	
+		tris = 0xFF;
+		rw = 1; // set reading mode
+		LCD_SetupDelay();
+		e = 1;
+		LCD_EnablePulseDelay();
+		d = data;
+		e = 0;
+		LCD_HoldupDelay();
+		LCD_CycleMakeupDelay();
+	}
+	
+	return d;
+006C  0841  	MOVF LCD_Read_00000_1_d, W
+006D  00C2  	MOVWF CompTempVarRet558
+
+}
+006E  0008  	RETURN
+
+
+_LCD_TEMPL
+void LCD_RawWriteNibble( char d )
+
+{
+	// Note: this function is duplicate below, but declared inline.
+	// this is to reduce stack depth usage
+	// Note: this function is above, but declared inline.
+	// this is to reduce stack depth usage
+	volatile unsigned char data@DataPort, tris@Data_PortTris;
+	volatile bit rw@CtrlPort.RW, e@CtrlPort.E;
+	
+	if( InterfaceType == LCD_4_BIT_HI_NIB_MODE )
+
+	{
+		// port upper nibble output
+		rw = 0; // set writing mode
+00A7  1087  	BCF LCD_RawWri_00017_1_rw,1
+
+		LCD_SetupDelay();
+00A8  0000  	NOP
+00A9  0000  	NOP
+
+		tris &= 0x0F;
+00AA  300F  	MOVLW 0x0F
+00AB  1683  	BSF STATUS, RP0
+00AC  0588  	ANDWF LCD_RawWri_00017_1_tris, F
+
+		data &= 0x0F;
+00AD  300F  	MOVLW 0x0F
+00AE  1283  	BCF STATUS, RP0
+00AF  0588  	ANDWF LCD_RawWri_00017_1_data, F
+
+		data |= d & 0xF0;
+00B0  30F0  	MOVLW 0xF0
+00B1  052A  	ANDWF LCD_RawWri_00017_arg_d, W
+00B2  0488  	IORWF LCD_RawWri_00017_1_data, F
+
+		e = 1;
+00B3  1407  	BSF LCD_RawWri_00017_1_e,0
+
+		LCD_EnablePulseDelay();
+00B4  0000  	NOP
+00B5  0000  	NOP
+00B6  0000  	NOP
+00B7  0000  	NOP
+00B8  0000  	NOP
+
+		e = 0;
+00B9  1007  	BCF LCD_RawWri_00017_1_e,0
+
+		LCD_HoldupDelay();
+00BA  0000  	NOP
+
+		LCD_CycleMakeupDelay();
+00BB  0000  	NOP
+00BC  0000  	NOP
+
+	}
+
+	if( InterfaceType == LCD_4_BIT_LO_NIB_MODE )
+	{
+		// port upper nibble output
+		rw = 0; // set writing mode
+		LCD_SetupDelay();
+		tris &= 0xF0;
+		data &= 0xF0;
+		data |= d >> 4;
+		e = 1;
+		LCD_EnablePulseDelay();
+		e = 0;
+		LCD_HoldupDelay();
+		LCD_CycleMakeupDelay();
+	}	
+}
+00BD  0008  	RETURN
+
+
+_LCD_TEMPL
+inline void LCD_RawWriteNibbleInline( char d )
+{
+	// Note: this function is above, but declared inline.
+	// this is to reduce stack depth usage
+	volatile unsigned char data@DataPort, tris@Data_PortTris;
+	volatile bit rw@CtrlPort.RW, e@CtrlPort.E;
+	
+	if( InterfaceType == LCD_4_BIT_HI_NIB_MODE )
+	{
+		// port upper nibble output
+		rw = 0; // set writing mode
+		LCD_SetupDelay();
+		tris &= 0x0F;
+		data &= 0x0F;
+		data |= d & 0xF0;
+		e = 1;
+		LCD_EnablePulseDelay();
+		e = 0;
+		LCD_HoldupDelay();
+		LCD_CycleMakeupDelay();
+	}
+
+	if( InterfaceType == LCD_4_BIT_LO_NIB_MODE )
+	{
+		// port upper nibble output
+		rw = 0; // set writing mode
+		LCD_SetupDelay();
+		tris &= 0xF0;
+		data &= 0xF0;
+		data |= d >> 4;
+		e = 1;
+		LCD_EnablePulseDelay();
+		e = 0;
+		LCD_HoldupDelay();
+		LCD_CycleMakeupDelay();
+	}	
+}
+
+
+_LCD_TEMPL
+void LCD_RawWrite( char d )
+
+{		
+	volatile unsigned char tris@Data_PortTris, data@DataPort;
+	volatile bit rw@CtrlPort.RW, e@CtrlPort.E;
+		
+	if( InterfaceType == LCD_4_BIT_HI_NIB_MODE  )
+
+	{
+		// output upper nibble, then lower nibble
+		bit flag = 0;
+006F  1041  	BCF LCD_RawWri_00018_2_flag,0
+
+		do
+0070        label8
+
+		{			
+			_LCD_RawWriteNibbleInline( d );
+0070  0840  	MOVF LCD_RawWri_00018_arg_d, W
+0071  00C2  	MOVWF LCD_RawWri_00018_5_d
+0072  1087  	BCF LCD_RawWri_00018_7_rw,1
+0073  0000  	NOP
+0074  0000  	NOP
+0075  300F  	MOVLW 0x0F
+0076  1683  	BSF STATUS, RP0
+0077  0588  	ANDWF LCD_RawWri_00018_7_tris, F
+0078  300F  	MOVLW 0x0F
+0079  1283  	BCF STATUS, RP0
+007A  0588  	ANDWF LCD_RawWri_00018_7_data, F
+007B  30F0  	MOVLW 0xF0
+007C  0542  	ANDWF LCD_RawWri_00018_5_d, W
+007D  0488  	IORWF LCD_RawWri_00018_7_data, F
+007E  1407  	BSF LCD_RawWri_00018_7_e,0
+007F  0000  	NOP
+0080  0000  	NOP
+0081  0000  	NOP
+0082  0000  	NOP
+0083  0000  	NOP
+0084  1007  	BCF LCD_RawWri_00018_7_e,0
+0085  0000  	NOP
+0086  0000  	NOP
+0087  0000  	NOP
+
+			flag = !flag;
+0088  01C2  	CLRF CompTempVar559
+0089  1C41  	BTFSS LCD_RawWri_00018_2_flag,0
+008A  0AC2  	INCF CompTempVar559, F
+008B  1041  	BCF LCD_RawWri_00018_2_flag,0
+008C  1842  	BTFSC CompTempVar559,0
+008D  1441  	BSF LCD_RawWri_00018_2_flag,0
+
+			d <<= 4;
+008E  0EC0  	SWAPF LCD_RawWri_00018_arg_d, F
+008F  30F0  	MOVLW 0xF0
+0090  05C0  	ANDWF LCD_RawWri_00018_arg_d, F
+
+		}
+		while( flag );
+0091  1841  	BTFSC LCD_RawWri_00018_2_flag,0
+0092  2870  	GOTO	label8
+
+	}	
+
+	if( InterfaceType == LCD_4_BIT_LO_NIB_MODE )
+	{
+		// output upper nibble, then lower nibble
+		bit flag = 0;
+		do
+		{			
+			_LCD_RawWriteNibbleInline( d );
+			flag = !flag;
+			d <<= 4;
+		}
+		while( flag );
+	}	
+
+
+	if( InterfaceType == LCD_8_BIT_MODE )
+	{
+		// port b output
+		rw = 0; // set writing mode
+		tris = 0x00;		
+		data = d;
+		LCD_SetupDelay();
+		e = 1;
+		LCD_EnablePulseDelay();
+		e = 0;
+		LCD_HoldupDelay();
+		LCD_CycleMakeupDelay();
+	}
+}
+0093  0008  	RETURN
+
+
+_LCD_TEMPL
+inline void LCD_WaitForNotBusy()
+{
+	volatile bit rs@CtrlPort.RS; bit old_RS = rs;	
+	rs = 0;
+	while( _LCD_Read() & 0x80 ); // wait while busy set
+	rs = old_RS;
+}
+
+_LCD_TEMPL
+void LCD_Write(char d )
+
+{
+	volatile bit rs@CtrlPort.RS;
+	
+	if( UseBusy == 1 )
+
+	{	
+		// wait until display Not busy before sending next data
+		if ( writeDelayType == WriteControlled )
+0094  08A3  	MOVF gbl_writeDelayType, F
+0095  1D03  	BTFSS STATUS,Z
+0096  28A3  	GOTO	label11
+
+			_LCD_WaitForNotBusy();
+0097  1040  	BCF LCD_Write_00000_5_old_RS,0
+0098  1D07  	BTFSS LCD_Write_00000_5_rs,2
+0099  289B  	GOTO	label9
+009A  1440  	BSF LCD_Write_00000_5_old_RS,0
+009B        label9
+009B  1107  	BCF LCD_Write_00000_5_rs,2
+009C        label10
+009C  2048  	CALL LCD_Read_00000
+009D  1BC2  	BTFSC CompTempVarRet558,7
+009E  289C  	GOTO	label10
+009F  1840  	BTFSC LCD_Write_00000_5_old_RS,0
+00A0  1507  	BSF LCD_Write_00000_5_rs,2
+00A1  1C40  	BTFSS LCD_Write_00000_5_old_RS,0
+00A2  1107  	BCF LCD_Write_00000_5_rs,2
+00A3        label11
+
+		
+		_LCD_RawWrite( d );
+00A3  083F  	MOVF LCD_Write_00000_arg_d, W
+00A4  00C0  	MOVWF LCD_RawWri_00018_arg_d
+00A5  206F  	CALL LCD_RawWri_00018
+
+	}
+	else
+	{		
+ 		_LCD_RawWrite( d );
+		
+		// give time to complete
+		if ( writeDelayType == WriteControlled )
+		{
+			if( !rs && (d == return_home || d == clear_lcd) )
+				delay_ms( 2 ); // return_home takes more time than other instructions to execute
+			else
+				delay_10us( 5 ); // 50us - enough time for normal command execution - clear and home need longer!!			
+		}
+	}
+}
+00A6  0008  	RETURN
+
+
+_LCD_TEMPL
+void LCD_Clear()
+
+{
+	_LCD_FunctionMode();
+00F2  1283  	BCF STATUS, RP0
+00F3  1303  	BCF STATUS, RP1
+00F4  1107  	BCF LCD_Clear_00000_4_rs,2
+
+	_LCD_Write( clear_lcd ); // clear display
+00F5  3001  	MOVLW 0x01
+00F6  00BF  	MOVWF LCD_Write_00000_arg_d
+00F7  2094  	CALL LCD_Write_00000
+
+	_LCD_Write( return_home );
+00F8  3002  	MOVLW 0x02
+00F9  00BF  	MOVWF LCD_Write_00000_arg_d
+00FA  2094  	CALL LCD_Write_00000
+
+}
+00FB  0008  	RETURN
+
+
+_LCD_TEMPL
+void LCD_Setup( void )
+
+{
+	// set control port bits used to output
+	volatile bit trisRS@Ctrl_PortTris.RS, trisRW@Ctrl_PortTris.RW, trisE@Ctrl_PortTris.E;
+	trisRS = 0;
+0189  1683  	BSF STATUS, RP0
+018A  1303  	BCF STATUS, RP1
+018B  1107  	BCF LCD_Setup_00000_1_trisRS,2
+
+	trisRW = 0;
+018C  1087  	BCF LCD_Setup_00000_1_trisRW,1
+
+	trisE = 0;
+018D  1007  	BCF LCD_Setup_00000_1_trisE,0
+
+	
+	writeDelayType = WriteNoDelay; // no delays in data writes
+018E  3001  	MOVLW 0x01
+018F  1283  	BCF STATUS, RP0
+0190  00A3  	MOVWF gbl_writeDelayType
+
+	
+	delay_ms(16); // Power up delay
+0191  3010  	MOVLW 0x10
+0192  00AA  	MOVWF delay_ms_00000_arg_del
+0193  2010  	CALL delay_ms_00000
+
+	_LCD_FunctionMode();
+0194  1107  	BCF LCD_Setup_00000_11_rs,2
+
+
+	if( InterfaceType == LCD_4_BIT_HI_NIB_MODE )
+	{
+		// Reset sequence as described in data sheets
+		_LCD_RawWriteNibble( system_set_reset ); 
+0195  3030  	MOVLW 0x30
+0196  00AA  	MOVWF LCD_RawWri_00017_arg_d
+0197  20A7  	CALL LCD_RawWri_00017
+
+		delay_ms(5); // min delay here of 4.1 ms
+0198  3005  	MOVLW 0x05
+0199  00AA  	MOVWF delay_ms_00000_arg_del
+019A  2010  	CALL delay_ms_00000
+
+		_LCD_RawWriteNibble( system_set_reset );
+019B  3030  	MOVLW 0x30
+019C  00AA  	MOVWF LCD_RawWri_00017_arg_d
+019D  20A7  	CALL LCD_RawWri_00017
+
+		delay_10us(100); // min delay here of 100us
+019E  3064  	MOVLW 0x64
+019F  00AA  	MOVWF delay_10us_00000_arg_del
+01A0  2020  	CALL delay_10us_00000
+
+		_LCD_RawWriteNibble( system_set_reset );
+01A1  3030  	MOVLW 0x30
+01A2  00AA  	MOVWF LCD_RawWri_00017_arg_d
+01A3  20A7  	CALL LCD_RawWri_00017
+
+	   
+		// LCD busy flag is valid from this point onwards
+		if( UseBusy == 1 )
+			_LCD_WaitForNotBusy();
+01A4  102A  	BCF LCD_Setup_00000_30_old_RS,0
+01A5  1907  	BTFSC LCD_Setup_00000_30_rs,2
+01A6  142A  	BSF LCD_Setup_00000_30_old_RS,0
+01A7  1107  	BCF LCD_Setup_00000_30_rs,2
+01A8        label22
+01A8  2048  	CALL LCD_Read_00000
+01A9  1BC2  	BTFSC CompTempVarRet558,7
+01AA  29A8  	GOTO	label22
+01AB  182A  	BTFSC LCD_Setup_00000_30_old_RS,0
+01AC  1507  	BSF LCD_Setup_00000_30_rs,2
+01AD  1C2A  	BTFSS LCD_Setup_00000_30_old_RS,0
+01AE  1107  	BCF LCD_Setup_00000_30_rs,2
+
+		else
+			delay_10us( 5 ); // standard command delay time
+		
+		_LCD_RawWriteNibble( system_set_4_bit );
+01AF  3028  	MOVLW 0x28
+01B0  00AA  	MOVWF LCD_RawWri_00017_arg_d
+01B1  20A7  	CALL LCD_RawWri_00017
+
+		
+		if( UseBusy == 1 )
+			_LCD_WaitForNotBusy();
+01B2  102A  	BCF LCD_Setup_00000_39_old_RS,0
+01B3  1907  	BTFSC LCD_Setup_00000_39_rs,2
+01B4  142A  	BSF LCD_Setup_00000_39_old_RS,0
+01B5  1107  	BCF LCD_Setup_00000_39_rs,2
+01B6        label23
+01B6  2048  	CALL LCD_Read_00000
+01B7  1BC2  	BTFSC CompTempVarRet558,7
+01B8  29B6  	GOTO	label23
+01B9  182A  	BTFSC LCD_Setup_00000_39_old_RS,0
+01BA  1507  	BSF LCD_Setup_00000_39_rs,2
+01BB  1C2A  	BTFSS LCD_Setup_00000_39_old_RS,0
+01BC  1107  	BCF LCD_Setup_00000_39_rs,2
+
+		else
+			delay_10us( 5 ); // standard command delay time
+
+		writeDelayType = WriteControlled;
+01BD  01A3  	CLRF gbl_writeDelayType
+
+		_LCD_Write( system_set_4_bit );
+01BE  3028  	MOVLW 0x28
+01BF  00BF  	MOVWF LCD_Write_00000_arg_d
+01C0  2094  	CALL LCD_Write_00000
+
+	}
+
+	if( InterfaceType == LCD_4_BIT_LO_NIB_MODE )
+	{
+		// Reset sequence as described in data sheets
+		_LCD_RawWriteNibble( system_set_reset ); 
+		delay_ms(5); // min delay here of 4.1 ms
+		_LCD_RawWriteNibble( system_set_reset );
+		delay_10us(100); // min delay here of 100us
+		_LCD_RawWriteNibble( system_set_reset );
+	   
+		// LCD busy flag is valid from this point onwards
+		if( UseBusy == 1 )
+			_LCD_WaitForNotBusy();
+		else
+			delay_10us( 5 ); // standard command delay time
+		
+		_LCD_RawWriteNibble( system_set_4_bit );
+		
+		if( UseBusy == 1 )
+			_LCD_WaitForNotBusy();
+		else
+			delay_10us( 5 ); // standard command delay time
+
+		writeDelayType = WriteControlled;
+		_LCD_Write( system_set_4_bit );
+	}
+	
+	if( InterfaceType == LCD_8_BIT_MODE )
+	{
+		// Reset sequence as described in data sheets
+		_LCD_RawWrite( system_set_reset ); 
+		delay_ms(5); // min delay here of 4.1 ms
+		_LCD_RawWrite( system_set_reset );
+		delay_10us(10); // min delay here of 100us
+		_LCD_RawWrite( system_set_reset );
+	   
+		// busy flag is valid from this point onwards
+		if( UseBusy == 1 )
+			_LCD_WaitForNotBusy();
+		else
+			delay_10us( 5 ); // standard command delay time
+
+		_LCD_RawWrite( system_set_8_bit );	
+
+		if( UseBusy == 1 )
+			_LCD_WaitForNotBusy();
+		else
+			delay_10us( 5 ); // standard command delay time
+		
+		writeDelayType = WriteControlled; // use busy
+	}
+		
+	_LCD_Write( entry_mode );
+01C1  3006  	MOVLW 0x06
+01C2  00BF  	MOVWF LCD_Write_00000_arg_d
+01C3  2094  	CALL LCD_Write_00000
+
+	_LCD_Write( display_on );
+01C4  300C  	MOVLW 0x0C
+01C5  00BF  	MOVWF LCD_Write_00000_arg_d
+01C6  2094  	CALL LCD_Write_00000
+
+	_LCD_Write( set_dd_ram );
+01C7  3080  	MOVLW 0x80
+01C8  00BF  	MOVWF LCD_Write_00000_arg_d
+01C9  2094  	CALL LCD_Write_00000
+
+}
+01CA  0008  	RETURN
+
+
+_LCD_TEMPL
+void LCD_Printf( const char *lcdptr )
+
+{
+	char pi = 0, c;
+00BE  01BD  	CLRF LCD_Printf_00000_1_pi
+
+	_LCD_DataMode();
+00BF  1507  	BSF LCD_Printf_00000_4_rs,2
+
+    while( 1 )
+00C0        label12
+00E1  28C0  	GOTO	label12
+
+    {
+		c = lcdptr[pi++];
+00C0  1383  	BCF STATUS,IRP
+00C1  182B  	BTFSC LCD_Printf_00000_arg_lcdptr+D'1',0
+00C2  1783  	BSF STATUS,IRP
+00C3  082A  	MOVF LCD_Printf_00000_arg_lcdptr, W
+00C4  0084  	MOVWF FSR
+00C5  1383  	BCF STATUS,IRP
+00C6  182B  	BTFSC LCD_Printf_00000_arg_lcdptr+D'1',0
+00C7  1783  	BSF STATUS,IRP
+00C8  082A  	MOVF LCD_Printf_00000_arg_lcdptr, W
+00C9  0084  	MOVWF FSR
+00CA  083D  	MOVF LCD_Printf_00000_1_pi, W
+00CB  00BF  	MOVWF CompTempVar574
+00CC  0ABD  	INCF LCD_Printf_00000_1_pi, F
+00CD  083F  	MOVF CompTempVar574, W
+00CE  0784  	ADDWF FSR, F
+00CF  0800  	MOVF INDF, W
+00D0  00BE  	MOVWF LCD_Printf_00000_1_c
+
+		if ( !c )
+00D1  08BE  	MOVF LCD_Printf_00000_1_c, F
+00D2  1903  	BTFSC STATUS,Z
+
+			return;
+		if ( c == '\n' )
+00D4  083E  	MOVF LCD_Printf_00000_1_c, W
+00D5  3A0A  	XORLW 0x0A
+00D6  1D03  	BTFSS STATUS,Z
+00D7  28DE  	GOTO	label13
+00DE        label13
+
+		{
+			_LCD_FunctionMode();
+00D8  1107  	BCF LCD_Printf_00000_10_rs,2
+
+			// move to start second line
+			_LCD_Write( set_dd_ram + 0x40 );
+00D9  30C0  	MOVLW 0xC0
+00DA  00BF  	MOVWF LCD_Write_00000_arg_d
+00DB  2094  	CALL LCD_Write_00000
+
+			_LCD_DataMode();
+00DC  1507  	BSF LCD_Printf_00000_16_rs,2
+
+		}
+		else
+00DD  28C0  	GOTO	label12
+
+			_LCD_Write( c );// Display on LCD
+00DE  083E  	MOVF LCD_Printf_00000_1_c, W
+00DF  00BF  	MOVWF LCD_Write_00000_arg_d
+00E0  2094  	CALL LCD_Write_00000
+
+	}
+}
+00D3  0008  	RETURN
+
+
+_LCD_TEMPL
+void LCD_Printf( rom char *lcdptr )
+{
+	char pi = 0, c;
+	_LCD_DataMode();
+    while( 1 )
+    {
+		c = lcdptr[pi++];
+		if ( !c )
+			return;
+		if ( c == '\n' )
+		{
+			_LCD_FunctionMode();
+			// move to start second line
+			_LCD_Write( set_dd_ram + 0x40 ); 
+			_LCD_DataMode();
+		}
+		else
+			_LCD_Write( c );// Display on LCD
+	}
+}
+
+_LCD_TEMPL
+void LCD_Printf( const char *lcdptr, unsigned int val ) // JS - Accept unsigned by default
+{
+	unsigned char pi = 0, bi, c, fill, baseOrBits, sign, mask;
+	unsigned char buff[ 10 ]; // max length allow is 9
+	bit pad;
+	
+	_LCD_DataMode();
+    while( 1 )
+    {
+		c = lcdptr[pi++]; if ( !c ) return;
+		
+		switch( c )
+		{
+		case '\n':
+			_LCD_FunctionMode();
+			// move to start second line
+			_LCD_Write( set_dd_ram + 0x40 );
+			_LCD_DataMode();
+			break;
+		case '%':
+			c = lcdptr[pi++]; if ( !c ) return;
+			
+			//Handle escape sequence that prints '%'
+			if ( c == '%' )
+			{
+				_LCD_Write( c );// Display on LCD
+				break;
+			}
+			
+			// Next character if zero indicates that we should zero fill output
+			if ( c == '0' )
+			{
+				fill = '0';
+				c = lcdptr[pi++]; if ( !c ) return;
+			}
+			else
+				fill = ' ';
+
+			// Next character if valid digit indicates field width
+			if( c > '0' && c <= '9' )
+			{
+				pad = 1;
+				bi = c - 48;;				
+				c = lcdptr[pi++]; if ( !c ) return;
+			}
+			else
+			{
+				pad = 0;
+				bi = sizeof( buff ) - 1;
+			}
+				
+			
+			// Next character indicates the radix (number base)
+			sign = 0;
+			switch( c )
+			{
+			case 'd':
+				if( val & 0x8000 )	// Negative values must be adjusted to be positive // JS
+				{
+					sign = '-';
+					val ^= 0xFFFF; // 2s complement negate	// JS
+					val++;
+				}
+			case 'u':
+				baseOrBits = 10; // base ten, divide by ten per digit
+				break;			
+			case 'X':
+				baseOrBits = 4; // base 16, requires a 4 bit shift per digit
+				mask = 0x0F;
+				break;
+			case 'b':
+				baseOrBits = 1; // base 1, requires a 1 bit shift per digit
+				mask = 0x01;
+				break;
+			default:
+				return; // no radix
+			}
+				
+			// null terminate, then reverse fill string
+			buff[ bi ] = '\0';
+			
+			bit first = true;				
+			while( bi )
+			{
+				bi--;
+				if( val || first )
+				{
+					first = false;
+										
+					if( baseOrBits == 10 )
+					{
+						c = (unsigned char)(val % 10);	// JS - Optimization, use absolute of 10
+						val /= 10;	// JS - Optimization, use absolute of 10
+					}
+					else
+					{
+						c = val & mask;
+						val = ((unsigned int)val) >> baseOrBits;						
+					}
+					
+					if( c > 9 )
+						c += 55; // convert to hex digits character A-F
+					else
+						c += 48; // convert to digit character 0-9
+
+				}
+				else
+				{
+					if( sign && (bi == 0 || fill != '0') )
+					{
+						c = sign;
+						sign = 0;
+					}
+					else
+						c = fill;
+				}
+				
+				buff[ bi ] = c;
+				
+				if( pad == 0 && val == 0 && sign == 0 )
+					break;
+			}
+			// output string to display
+			while( 1 )
+			{
+				c = buff[ bi ];
+				if( !c ) break;
+				_LCD_Write( c );// Display on LCD
+				bi++;
+			}
+			break;
+		default:
+			_LCD_Write( c );// Display on LCD
+			break;
+		}
+	}
+}
+
+_LCD_TEMPL
+void LCD_GotoXy( char x, char y )
+
+{
+	// displays memory mapping with two lines:
+	// line 1: 0x00
+	// line 2: 0x40
+	
+	// display memory mapping with four lines:
+	// line 1: 0x00
+	// line 2: 0x40
+	// line 3: 0x14
+	// line 4: 0x54
+	
+	_LCD_FunctionMode();
+00E2  1107  	BCF LCD_GotoXy_00000_4_rs,2
+
+	unsigned char offset = x;
+00E3  082A  	MOVF LCD_GotoXy_00000_arg_x, W
+00E4  00AC  	MOVWF LCD_GotoXy_00000_1_offset
+
+	if( y & 0x01 ) offset += 0x40;
+00E5  1C2B  	BTFSS LCD_GotoXy_00000_arg_y,0
+00E6  28E9  	GOTO	label14
+00E7  3040  	MOVLW 0x40
+00E8  07AC  	ADDWF LCD_GotoXy_00000_1_offset, F
+00E9        label14
+
+	if( y & 0x02 ) offset += 0x14;		
+00E9  1CAB  	BTFSS LCD_GotoXy_00000_arg_y,1
+00EA  28ED  	GOTO	label15
+00EB  3014  	MOVLW 0x14
+00EC  07AC  	ADDWF LCD_GotoXy_00000_1_offset, F
+00ED        label15
+
+	_LCD_Write( set_dd_ram + offset );
+00ED  082C  	MOVF LCD_GotoXy_00000_1_offset, W
+00EE  3E80  	ADDLW 0x80
+00EF  00BF  	MOVWF LCD_Write_00000_arg_d
+00F0  2094  	CALL LCD_Write_00000
+
+}
+00F1  0008  	RETURN
+
+
+
+_LCD_TEMPL
+void LCD_Function( char func )
+
+{
+	_LCD_FunctionMode();
+01CB  1107  	BCF LCD_Functi_00015_4_rs,2
+
+	_LCD_Write( func );
+01CC  082C  	MOVF LCD_Functi_00015_arg_func, W
+01CD  00BF  	MOVWF LCD_Write_00000_arg_d
+01CE  2094  	CALL LCD_Write_00000
+
+}
+01CF  0008  	RETURN
+
+
+////////////////////////////////////////////////////////////////////////////
+// Helpers that hide template arguments
+////////////////////////////////////////////////////////////////////////////
+// low level functions
+#define lcd_write		LCD_Write<LCD_ARGS>
+#define lcd_waitfornotbusy LCD_WaitForNotBusy<LCD_ARGS>
+#define lcd_read		LCD_Read<LCD_ARGS>
+#define lcd_funcmode	LCD_FunctionMode<LCD_ARGS>
+#define lcd_datamode	LCD_DataMode<LCD_ARGS>
+
+
+// high level functions - these all set function or data mode as required
+#define lcd_setup		LCD_Setup<LCD_ARGS>
+#define lprintf			LCD_Printf<LCD_ARGS>
+#define lcd_clear		LCD_Clear<LCD_ARGS>
+#define lcd_gotoxy		LCD_GotoXy<LCD_ARGS>
+#define lcd_function 	LCD_Function<LCD_ARGS>
+
+#include <system.h>
+#include "DABControl.h"
+
+// Target PIC16F77
+// Configuration registers
+#pragma DATA _CONFIG, _BODEN_OFF & _PWRTE_OFF & _WDT_OFF & _CP_OFF & _HS_OSC // Brown out reset off, Power-up Timer off, Watchdog timer off, Code Protection off, HS oscillator
+
+// Set clock frequency - 6MHz Crystal
+#pragma CLOCK_FREQ  6000000
+
+// http://www.sourceboost.com/Products/BoostC/ExampleCode/I2C/I2C_Slave_1/I2C_Slave_1.c.html
+// https://www.microchip.com/forums/m486328.aspx
+// https://www.microchip.com/forums/m14311.aspx
+// https://electrosome.com/i2c-pic-microcontroller-mplab-xc8/
+
+// https://hackaday.com/2015/10/29/embed-with-elliot-going-round-with-circular-buffers/
+// https://github.com/hexagon5un/embed_with_elliot-circular_buffer
+
+// http://eng-serve.com/pic/pic_timer.html
+
+// https://www.allaboutcircuits.com/technical-articles/how-to-a-162-lcd-module-with-an-mcu/
+
+/******************************************************
+  Global variables
+*******************************************************/
+char I2C_slave_address = 0x3E; // slave address
+02E6  303E  	MOVLW 0x3E
+02E7  1283  	BCF STATUS, RP0
+02E8  1303  	BCF STATUS, RP1
+02E9  00A4  	MOVWF gbl_I2C_slave_address
+
+
+char iRS232Index;
+char rs232Buffer[RX_BUFFER_SIZE];
+
+char cTask;
+char iSecQ;
+
+char iActiveInput;
+char iActiveInputPrev;
+
+/******************************************************
+  These variables and functions are for a circular buffer
+*******************************************************/
+enum BufferStatus {BUFFER_OK, BUFFER_EMPTY, BUFFER_FULL};
+struct Buffer {
+    unsigned char data[I2C_BUFFER_SIZE];
+    unsigned char iHead;
+    unsigned char iTail;
+};
+volatile struct Buffer i2cBuffer = {{0}, 0, 0};
+02EA  1703  	BSF STATUS, RP1
+02EB  0190  	CLRF gbl_i2cBuffer
+02EC  01F5  	CLRF gbl_i2cBuffer+D'101'
+02ED  01F6  	CLRF gbl_i2cBuffer+D'102'
+
+
+enum BufferStatus i2cBufferWrite(unsigned char byteIn) {
+
+    unsigned char iNextHead = (i2cBuffer.iHead == (I2C_BUFFER_SIZE - 1)) ? 0 : i2cBuffer.iHead + 1; 
+002E  0875  	MOVF gbl_i2cBuffer+D'101', W
+002F  3A64  	XORLW 0x64
+0030  1D03  	BTFSS STATUS,Z
+0031  2834  	GOTO	label5
+0032  01C9  	CLRF i2cBufferW_00016_1_iNextHead
+0033  2836  	GOTO	label6
+0034        label5
+0034  0A75  	INCF gbl_i2cBuffer+D'101', W
+0035  00C9  	MOVWF i2cBufferW_00016_1_iNextHead
+0036        label6
+
+ 
+    if (iNextHead == i2cBuffer.iTail){
+0036  0876  	MOVF gbl_i2cBuffer+D'102', W
+0037  0649  	XORWF i2cBufferW_00016_1_iNextHead, W
+0038  1D03  	BTFSS STATUS,Z
+0039  283D  	GOTO	label7
+003D        label7
+
+        return BUFFER_FULL;
+003A  3002  	MOVLW 0x02
+003B  00CA  	MOVWF CompTempVarRet555
+
+    }
+    i2cBuffer.data[i2cBuffer.iHead] = byteIn;
+003D  1783  	BSF	STATUS,IRP
+003E  3010  	MOVLW LOW(gbl_i2cBuffer+D'0')
+003F  0084  	MOVWF FSR
+0040  0875  	MOVF gbl_i2cBuffer+D'101', W
+0041  0784  	ADDWF FSR, F
+0042  0848  	MOVF i2cBufferW_00016_arg_byteIn, W
+0043  0080  	MOVWF INDF
+
+    i2cBuffer.iHead = iNextHead;
+0044  0849  	MOVF i2cBufferW_00016_1_iNextHead, W
+0045  00F5  	MOVWF gbl_i2cBuffer+D'101'
+
+    return BUFFER_OK;
+0046  01CA  	CLRF CompTempVarRet555
+
+}
+003C  0008  	RETURN
+0047  0008  	RETURN
+
+
+enum BufferStatus i2cBufferRead(unsigned char *byteOut) {
+
+    if (i2cBuffer.iHead == i2cBuffer.iTail){
+0166  0876  	MOVF gbl_i2cBuffer+D'102', W
+0167  0675  	XORWF gbl_i2cBuffer+D'101', W
+0168  1D03  	BTFSS STATUS,Z
+0169  296D  	GOTO	label19
+016D        label19
+
+        return BUFFER_EMPTY;
+016A  3001  	MOVLW 0x01
+016B  00AE  	MOVWF CompTempVarRet551
+
+    }
+    *byteOut = i2cBuffer.data[i2cBuffer.iTail];
+016D  1783  	BSF	STATUS,IRP
+016E  3010  	MOVLW LOW(gbl_i2cBuffer+D'0')
+016F  0084  	MOVWF FSR
+0170  0876  	MOVF gbl_i2cBuffer+D'102', W
+0171  00AF  	MOVWF CompTempVar552
+0172  082F  	MOVF CompTempVar552, W
+0173  0784  	ADDWF FSR, F
+0174  0800  	MOVF INDF, W
+0175  00B0  	MOVWF CompTempVar553
+0176  1383  	BCF STATUS,IRP
+0177  182D  	BTFSC i2cBufferR_00014_arg_byteOut+D'1',0
+0178  1783  	BSF STATUS,IRP
+0179  082C  	MOVF i2cBufferR_00014_arg_byteOut, W
+017A  0084  	MOVWF FSR
+017B  0830  	MOVF CompTempVar553, W
+017C  0080  	MOVWF INDF
+
+    i2cBuffer.iTail = (i2cBuffer.iTail == (I2C_BUFFER_SIZE - 1)) ? 0 : i2cBuffer.iTail + 1; 
+017D  0876  	MOVF gbl_i2cBuffer+D'102', W
+017E  3A64  	XORLW 0x64
+017F  1D03  	BTFSS STATUS,Z
+0180  2983  	GOTO	label20
+0181  01AF  	CLRF CompTempVar554
+0182  2985  	GOTO	label21
+0183        label20
+0183  0A76  	INCF gbl_i2cBuffer+D'102', W
+0184  00AF  	MOVWF CompTempVar554
+0185        label21
+0185  082F  	MOVF CompTempVar554, W
+0186  00F6  	MOVWF gbl_i2cBuffer+D'102'
+
+    return BUFFER_OK;
+0187  01AE  	CLRF CompTempVarRet551
+
+}
+016C  0008  	RETURN
+0188  0008  	RETURN
+
+
+/******************************************************
+  Function called once only to initialise variables and
+  setup the PIC registers
+*******************************************************/
+void initialise() {
+
+    // IO ports setup
+    trisa = 0x07; // RA0, RA1, RA2 are input, rest ouptuts (only RA4 used)
+01D8  3007  	MOVLW 0x07
+01D9  1683  	BSF STATUS, RP0
+01DA  1303  	BCF STATUS, RP1
+01DB  0085  	MOVWF gbl_trisa
+
+    porta = 0x00; // set to off
+01DC  1283  	BCF STATUS, RP0
+01DD  0185  	CLRF gbl_porta
+
+    trisb = 0x01; // RB0 (INT) is an input, rest outputs, unsued
+01DE  3001  	MOVLW 0x01
+01DF  1683  	BSF STATUS, RP0
+01E0  0086  	MOVWF gbl_trisb
+
+    portb = 0x00; // set to off
+01E1  1283  	BCF STATUS, RP0
+01E2  0186  	CLRF gbl_portb
+
+    trisc = 0xD8; // RC7 (Rx) and RC6 (Tx) are inputs, RC4[SDA] and RC3[SCL] are inputs (for I2C slave), RC0, RC1 and RC2 for LCD ouputs, RC5 unused
+01E3  30D8  	MOVLW 0xD8
+01E4  1683  	BSF STATUS, RP0
+01E5  0087  	MOVWF gbl_trisc
+
+    portc = 0x18; // set to off, except RC4, RC3 for I2C
+01E6  3018  	MOVLW 0x18
+01E7  1283  	BCF STATUS, RP0
+01E8  0087  	MOVWF gbl_portc
+
+    trisd = 0x00; // All outputs, LCD
+01E9  1683  	BSF STATUS, RP0
+01EA  0188  	CLRF gbl_trisd
+
+    portd = 0x00; // LCD outputs off
+01EB  1283  	BCF STATUS, RP0
+01EC  0188  	CLRF gbl_portd
+
+    trise = 0x00; // All outputs, unused
+01ED  1683  	BSF STATUS, RP0
+01EE  0189  	CLRF gbl_trise
+
+    porte = 0x00; // All off
+01EF  1283  	BCF STATUS, RP0
+01F0  0189  	CLRF gbl_porte
+
+
+    // ADC setup
+    adcon0 = 0x00; // ADC off
+01F1  019F  	CLRF gbl_adcon0
+
+    adcon1 = 0x0F; // All digital I/O
+01F2  300F  	MOVLW 0x0F
+01F3  1683  	BSF STATUS, RP0
+01F4  009F  	MOVWF gbl_adcon1
+
+    
+    t1con = 0x31;  //  00 11 0000 - 1:8 prescale, oscil off, internal clock, timer disabled
+01F5  3031  	MOVLW 0x31
+01F6  1283  	BCF STATUS, RP0
+01F7  0090  	MOVWF gbl_t1con
+
+    // Timer 1 setup - interrupt every 0.5 sec
+    // Timer1 Registers Prescaler= 1:8 - TMR1 Preset = 18660 - Freq = 4.00 Hz - Period = 0.250005 seconds
+    t1con.T1CKPS1 = 1;   // bits 5-4  Prescaler Rate Select bits
+01F8  1690  	BSF gbl_t1con,5
+
+    t1con.T1CKPS0 = 1;   // bit 4
+01F9  1610  	BSF gbl_t1con,4
+
+    t1con.T1OSCEN = 0;   // bit 3 Timer1 Oscillator Enable Control bit 0 = off (pins used for LCD)
+01FA  1190  	BCF gbl_t1con,3
+
+    t1con.NOT_T1SYNC = 1;// bit 2 Timer1 External Clock Input Synchronization Control bit...1 = Do not synchronize external clock input
+01FB  1510  	BSF gbl_t1con,2
+
+    t1con.TMR1CS = 0;    // bit 1 Timer1 Clock Source Select bit...0 = Internal clock (FOSC/4)
+01FC  1090  	BCF gbl_t1con,1
+
+    t1con.TMR1ON = 0;    // bit 0 enables timer
+01FD  1010  	BCF gbl_t1con,0
+
+    tmr1h = TMR1HV;      // preset for timer1 MSB register
+01FE  3048  	MOVLW 0x48
+01FF  008F  	MOVWF gbl_tmr1h
+
+    tmr1l = TMR1LV;      // preset for timer1 LSB register
+0200  30E4  	MOVLW 0xE4
+0201  008E  	MOVWF gbl_tmr1l
+
+    pie1.TMR1IE = 1;     // Timer 1 interrupt
+0202  1683  	BSF STATUS, RP0
+0203  140C  	BSF gbl_pie1,0
+
+
+    // I2C communications setup
+    //sspcon = 0x2E; // Receive Overflow Indicator cleared, SSPEN SDA/SCL set as enabled, CKP clock disabled, 1110 = I2C Slave mode - 7-bit address, with start/stop interrupts
+    sspcon.WCOL = 0; // No colision
+0204  1283  	BCF STATUS, RP0
+0205  1394  	BCF gbl_sspcon,7
+
+    sspcon.SSPOV = 0; // No overflow
+0206  1314  	BCF gbl_sspcon,6
+
+    sspcon.SSPEN = 1; // Enabled SDA/SCL pins
+0207  1694  	BSF gbl_sspcon,5
+
+    sspcon.CKP = 1; // SCK release control - enable clock
+0208  1614  	BSF gbl_sspcon,4
+
+    // 1110 = I2C Slave mode, 7-bit address with START and STOP bit interrupts enabled
+    sspcon.SSPM3 = 1;
+0209  1594  	BSF gbl_sspcon,3
+
+    sspcon.SSPM2 = 1;
+020A  1514  	BSF gbl_sspcon,2
+
+    sspcon.SSPM1 = 1;
+020B  1494  	BSF gbl_sspcon,1
+
+    sspcon.SSPM0 = 0;
+020C  1014  	BCF gbl_sspcon,0
+
+    
+    sspadd = I2C_slave_address << 1; // Address requested from the DAB module, should be shifted one bit to the left [ SSPSR<7:1> ]
+020D  0824  	MOVF gbl_I2C_slave_address, W
+020E  00AA  	MOVWF CompTempVar557
+020F  1003  	BCF STATUS,C
+0210  0D2A  	RLF CompTempVar557, W
+0211  1683  	BSF STATUS, RP0
+0212  0093  	MOVWF gbl_sspadd
+
+    sspstat = 0; // Clear by default
+0213  0194  	CLRF gbl_sspstat
+
+
+    // rs232 communications setup
+    // SYNC = 0, BRGH = 1, BRG16 = 0
+    // 4MHz Baud rate 9600 = 25 = ((4000000 / 9600) / 16) - 1
+    spbrg = 25; // 25 = ((4000000 / 9600) / 16) - 1
+0214  3019  	MOVLW 0x19
+0215  0099  	MOVWF gbl_spbrg
+
+    txsta = 0x36; // 00100110 - 8 bit, transmit enable, async mode, high speed, TSR empty, 9bit (0)
+0216  3036  	MOVLW 0x36
+0217  0098  	MOVWF gbl_txsta
+
+    rcsta = 0x90; // 10010000 - serial port enabled, 8 bit reception, async mode continuous recieve, no frame error, no overrun error
+0218  3090  	MOVLW 0x90
+0219  1283  	BCF STATUS, RP0
+021A  0098  	MOVWF gbl_rcsta
+
+    // No receive commands, only sends
+    //pie1.RCIE = 1; // Usart interrupt receive (no send interrupt)
+    iRS232Index = 0;
+021B  01A5  	CLRF gbl_iRS232Index
+
+    
+    // Slight delay before initialising LCD and interrupts
+    delay_ms(100);
+021C  3064  	MOVLW 0x64
+021D  00AA  	MOVWF delay_ms_00000_arg_del
+021E  2010  	CALL delay_ms_00000
+
+    
+    // Setup for RB0 Interrupt [DC fail]
+    intcon.INTE = 1; // RB2 Interrupt (for DC Fail)
+021F  160B  	BSF gbl_intcon,4
+
+    option_reg.INTEDG = 0; // RB2 interrupt should occur on falling edge
+0220  1683  	BSF STATUS, RP0
+0221  1301  	BCF gbl_option_reg,6
+
+    intcon.INTF = 0; // Clear RB2 interrupt flag bit
+0222  108B  	BCF gbl_intcon,1
+
+    option_reg.NOT_RBPU = 1; // Port B pull-ups disabled (otherwise DC fail is not detected)
+0223  1781  	BSF gbl_option_reg,7
+
+
+    // Interrupt setup
+    intcon.PEIE = 1; // Enables all unmasked peripheral interrupts (required for RS232 and I2C)
+0224  170B  	BSF gbl_intcon,6
+
+    intcon.GIE = 1; // Enable global interrupts
+0225  178B  	BSF gbl_intcon,7
+
+    pie1.SSPIE = 1; // Enable I2C interrupt
+0226  158C  	BSF gbl_pie1,3
+
+
+    // No task at initialisation
+    cTask = 0;
+0227  1283  	BCF STATUS, RP0
+0228  01A6  	CLRF gbl_cTask
+
+    iSecQ = 0;
+0229  01A7  	CLRF gbl_iSecQ
+
+    
+    lcd_setup();
+022A  2189  	CALL LCD_Setup_00000
+
+    
+    sspcon.CKP = 1; // Pull clock high - we're ready to receive data
+022B  1614  	BSF gbl_sspcon,4
+
+}
+022C  0008  	RETURN
+
+
+/******************************************************
+  Interrupt handler
+*******************************************************/
+void interrupt(void) {
+
+    // external interrupt on RB0 - highest priority [DC fail]
+    if (intcon.INTF) {
+02F1  1C8B  	BTFSS gbl_intcon,1
+02F2  2AFB  	GOTO	label38
+02FB        label38
+
+        if (!NODC_FAIL) {
+02F3  1283  	BCF STATUS, RP0
+02F4  1303  	BCF STATUS, RP1
+02F5  1806  	BTFSC gbl_portb,0
+02F6  2AF9  	GOTO	label37
+02F9        label37
+
+            MUTEOUT = 0; // Mute amps
+02F7  1285  	BCF gbl_porta,5
+
+            // Show fault on display
+            // Flag this task to the task array
+            cTask.TASK_INT_EXT0 = 1;
+02F8  1426  	BSF gbl_cTask,0
+
+        }
+        intcon.INTF = 0;
+02F9  108B  	BCF gbl_intcon,1
+
+
+        return; // do not process any other interrupt
+02FA  2B3B  	GOTO	label45
+
+    }
+
+    // I2C
+    // SSP interrupt byte received
+    if (pir1.SSPIF) {
+02FB  1283  	BCF STATUS, RP0
+02FC  1303  	BCF STATUS, RP1
+02FD  1D8C  	BTFSS gbl_pir1,3
+02FE  2B2D  	GOTO	label43
+032D        label43
+
+        
+        char i2cData;
+        char i2cStatus;
+        char i2cState;
+
+        if ( sspcon.SSPOV == 1 ) { 
+02FF  1F14  	BTFSS gbl_sspcon,6
+0300  2B05  	GOTO	label39
+0305        label39
+
+            // Test if we have an overflow condition and clear it
+            i2cData = sspbuf; // Do a dummy read of the SSPBUF
+0301  0813  	MOVF gbl_sspbuf, W
+0302  00C3  	MOVWF interrupt_9_i2cData
+
+            sspcon.SSPOV = 0; // Clear the overflow flag
+0303  1314  	BCF gbl_sspcon,6
+
+        } else {
+0304  2B1E  	GOTO	label41
+
+            // Mask the status bits out from the other unimportant register bits
+            // SSPSTAT_BIT_MASK  0b00101101
+            // bit 0 BF: Buffer Full Status bit
+            // bit 2 R/W: Read/Write bit Information (I2C mode only)
+            // bit 3 S: START bit
+            // bit 5 D/A: Data/Address bit (I2C mode only)
+            i2cStatus = ( sspstat & SSPSTAT_BIT_MASK );
+0305  302D  	MOVLW 0x2D
+0306  1683  	BSF STATUS, RP0
+0307  0514  	ANDWF gbl_sspstat, W
+0308  1283  	BCF STATUS, RP0
+0309  00C4  	MOVWF interrupt_9_i2cStatus
+
+            
+            if ( (i2cStatus ^ I2CSTATE_1 ) == 0 ) {
+030A  3009  	MOVLW 0x09
+030B  0644  	XORWF interrupt_9_i2cStatus, W
+030C  00C6  	MOVWF CompTempVar561
+030D  08C6  	MOVF CompTempVar561, F
+030E  1D03  	BTFSS STATUS,Z
+030F  2B13  	GOTO	label40
+0313        label40
+
+                // State 1 - SSPSTAT bits: S = 1, D_A = 0, R_W = 0, BF = 1
+                // State 1: Master Write, Last Byte was an Address
+                // Do a dummy read of the SSPBUF
+                i2cData = sspbuf;
+0310  0813  	MOVF gbl_sspbuf, W
+0311  00C3  	MOVWF interrupt_9_i2cData
+
+            } else if ( (i2cStatus ^ I2CSTATE_2 ) == 0 ) {
+0312  2B1E  	GOTO	label41
+0313  3029  	MOVLW 0x29
+0314  0644  	XORWF interrupt_9_i2cStatus, W
+0315  00C7  	MOVWF CompTempVar562
+0316  08C7  	MOVF CompTempVar562, F
+0317  1D03  	BTFSS STATUS,Z
+0318  2B1E  	GOTO	label41
+031E        label41
+
+                // State 2 - SSPSTAT bits: S = 1, D_A = 1, R_W = 0, BF = 1
+                // State 2: Master Write, Last Byte was Data
+                // Read from SSBUF
+                i2cData = sspbuf;
+0319  0813  	MOVF gbl_sspbuf, W
+031A  00C3  	MOVWF interrupt_9_i2cData
+
+                i2cBufferWrite(i2cData);
+031B  0843  	MOVF interrupt_9_i2cData, W
+031C  00C8  	MOVWF i2cBufferW_00016_arg_byteIn
+031D  202E  	CALL i2cBufferW_00016
+
+            }
+        }
+
+        // If stop condition:
+        // State Stop - SSPSTAT bits: D_A = 1, P = 1, S = 0, R_W = 0, BF = 0
+        if ((( sspstat & SSPSTAT_STOP_BIT_MASK ) ^ I2CSTATE_STOP) == 0 ) {
+031E  303D  	MOVLW 0x3D
+031F  1683  	BSF STATUS, RP0
+0320  0514  	ANDWF gbl_sspstat, W
+0321  1283  	BCF STATUS, RP0
+0322  00C5  	MOVWF CompTempVar560
+0323  3030  	MOVLW 0x30
+0324  06C5  	XORWF CompTempVar560, F
+0325  08C5  	MOVF CompTempVar560, F
+0326  1D03  	BTFSS STATUS,Z
+0327  2B2C  	GOTO	label42
+032C        label42
+
+            // End of command - write FF to indicate it
+            i2cBufferWrite(0xFF);
+0328  30FF  	MOVLW 0xFF
+0329  00C8  	MOVWF i2cBufferW_00016_arg_byteIn
+032A  202E  	CALL i2cBufferW_00016
+
+            // Flag the task scheduler that there is data to process
+            cTask.TASK_I2C_RECV = 1;
+032B  1726  	BSF gbl_cTask,6
+
+        }
+
+        pir1.SSPIF = 0; // Clear interrupt flag
+032C  118C  	BCF gbl_pir1,3
+
+    }
+    
+    // Handle timer1 interrupt
+    if (pir1.TMR1IF) {
+032D  1C0C  	BTFSS gbl_pir1,0
+032E  2B3B  	GOTO	label45
+033B        label45
+
+        tmr1h = TMR1HV;      // preset for timer1 MSB register
+032F  3048  	MOVLW 0x48
+0330  008F  	MOVWF gbl_tmr1h
+
+        tmr1l = TMR1LV;      // preset for timer1 LSB register
+0331  30E4  	MOVLW 0xE4
+0332  008E  	MOVWF gbl_tmr1l
+
+        
+        // Tick the quarter seconds
+        iSecQ++; 
+0333  0AA7  	INCF gbl_iSecQ, F
+
+        // Once it reaches 8 (2 seconds), flag the task
+        if (iSecQ >= 8) {
+0334  3008  	MOVLW 0x08
+0335  0227  	SUBWF gbl_iSecQ, W
+0336  1C03  	BTFSS STATUS,C
+0337  2B3A  	GOTO	label44
+033A        label44
+
+            cTask.TASK_TIMER1 = 1;
+0338  17A6  	BSF gbl_cTask,7
+
+            iSecQ = 0;
+0339  01A7  	CLRF gbl_iSecQ
+
+        }
+
+        pir1.TMR1IF = 0;     // Clear interrupt flag
+033A  100C  	BCF gbl_pir1,0
+
+    }
+}
+033B  0E22  	SWAPF Int1BContext+D'2', W
+033C  0084  	MOVWF FSR
+033D  0E21  	SWAPF Int1BContext+D'1', W
+033E  008A  	MOVWF PCLATH
+033F  0E20  	SWAPF Int1BContext, W
+0340  0083  	MOVWF STATUS
+0341  0EFF  	SWAPF Int1Context, F
+0342  0E7F  	SWAPF Int1Context, W
+0343  0009  	RETFIE
+
+
+/******************************************************
+  RS232 functions (for debugging)
+*******************************************************/
+// Send single character byte over rs232
+void rs232SendByte(char c) {
+    txreg = c;
+    while (pir1.TXIF == 0); // Wait for byte to be transmitted
+    while (txsta.TRMT == 0); // Wait for byte to be transmitted
+}
+
+void rs232Print(unsigned char *s) {
+      while (*s) {
+        rs232SendByte(*s++);
+    }
+}
+
+/******************************************************
+  Called after I2C communcation received to process the 
+  bytes in the buffer
+*******************************************************/
+void i2cProcess() {
+
+
+    unsigned char iReadData;
+    unsigned char iProcessing = 0; // 0 for looking, 1 for functions, 2 for text data, 3 for custom data
+022D  1283  	BCF STATUS, RP0
+022E  1303  	BCF STATUS, RP1
+022F  01AB  	CLRF i2cProcess_00000_1_iProcessing
+
+
+    /*
+    if first command is 00
+    - if next is 38
+        - function follows (48,50)
+    - else function (80, C0)
+    if first command is 40 or C0
+        - data follows
+    */
+
+    // Keep reading until BUFFER_EMPTY
+    // i2cBufferRead moving the start position in the buffer for us
+    while (i2cBufferRead(&iReadData) == BUFFER_OK) {
+0230        label24
+0230  3000  	MOVLW HIGH(i2cProcess_00000_1_iReadData+D'0')
+0231  00AD  	MOVWF i2cBufferR_00014_arg_byteOut+D'1'
+0232  302A  	MOVLW LOW(i2cProcess_00000_1_iReadData+D'0')
+0233  00AC  	MOVWF i2cBufferR_00014_arg_byteOut
+0234  2166  	CALL i2cBufferR_00014
+0235  08AE  	MOVF CompTempVarRet551, F
+0236  1D03  	BTFSS STATUS,Z
+026B  2A30  	GOTO	label24
+
+        if (iReadData == 0xFF) {
+0238  0A2A  	INCF i2cProcess_00000_1_iReadData, W
+0239  1D03  	BTFSS STATUS,Z
+023A  2A3D  	GOTO	label25
+023D        label25
+
+            // Finished command
+            iProcessing = 0;
+023B  01AB  	CLRF i2cProcess_00000_1_iProcessing
+
+        } else if (iProcessing == 0) {
+023C  2A30  	GOTO	label24
+023D  08AB  	MOVF i2cProcess_00000_1_iProcessing, F
+023E  1D03  	BTFSS STATUS,Z
+023F  2A54  	GOTO	label28
+0254        label28
+
+            // Looking for a command or function
+            if (iReadData == 0x00) // found function
+0240  08AA  	MOVF i2cProcess_00000_1_iReadData, F
+0241  1D03  	BTFSS STATUS,Z
+0242  2A46  	GOTO	label26
+0246        label26
+
+                iProcessing = 1;
+0243  3001  	MOVLW 0x01
+0244  00AB  	MOVWF i2cProcess_00000_1_iProcessing
+
+            else if (iReadData == 0xC0) // found LCD data
+0245  2A30  	GOTO	label24
+0246  082A  	MOVF i2cProcess_00000_1_iReadData, W
+0247  3AC0  	XORLW 0xC0
+0248  1D03  	BTFSS STATUS,Z
+0249  2A4D  	GOTO	label27
+024D        label27
+
+                iProcessing = 2;
+024A  3002  	MOVLW 0x02
+024B  00AB  	MOVWF i2cProcess_00000_1_iProcessing
+
+            else if (iReadData == 0x40) // found custom chars
+024C  2A30  	GOTO	label24
+024D  082A  	MOVF i2cProcess_00000_1_iReadData, W
+024E  3A40  	XORLW 0x40
+024F  1D03  	BTFSS STATUS,Z
+0250  2A30  	GOTO	label24
+
+                iProcessing = 3;
+0251  3003  	MOVLW 0x03
+0252  00AB  	MOVWF i2cProcess_00000_1_iProcessing
+
+        } else if (iProcessing == 1) {
+0253  2A30  	GOTO	label24
+0254  032B  	DECF i2cProcess_00000_1_iProcessing, W
+0255  1D03  	BTFSS STATUS,Z
+0256  2A5F  	GOTO	label29
+025F        label29
+
+            // Doing functions
+            if (iReadData != 0x38) // Skip 0x38 function, but write anything else
+0257  082A  	MOVF i2cProcess_00000_1_iReadData, W
+0258  3A38  	XORLW 0x38
+0259  1903  	BTFSC STATUS,Z
+025A  2A30  	GOTO	label24
+
+                lcd_function(iReadData);
+025B  082A  	MOVF i2cProcess_00000_1_iReadData, W
+025C  00AC  	MOVWF LCD_Functi_00015_arg_func
+025D  21CB  	CALL LCD_Functi_00015
+
+        } else if (iProcessing > 1) {
+025E  2A30  	GOTO	label24
+025F  082B  	MOVF i2cProcess_00000_1_iProcessing, W
+0260  3C01  	SUBLW 0x01
+0261  1803  	BTFSC STATUS,C
+0262  2A30  	GOTO	label24
+
+            // Doing data
+            if (iReadData != 0xC0) { // Skip 0xC0 data, but write anything else
+0263  082A  	MOVF i2cProcess_00000_1_iReadData, W
+0264  3AC0  	XORLW 0xC0
+0265  1903  	BTFSC STATUS,Z
+0266  2A30  	GOTO	label24
+
+                lcd_datamode();
+0267  1507  	BSF i2cProcess_00000_19_rs,2
+
+                lcd_write(iReadData);
+0268  082A  	MOVF i2cProcess_00000_1_iReadData, W
+0269  00BF  	MOVWF LCD_Write_00000_arg_d
+026A  2094  	CALL LCD_Write_00000
+
+            }
+        }
+    }   
+}
+0237  0008  	RETURN
+
+
+// isData = 0 for instruction, 1 for data
+/*void lcdWrite(char isData, char cData, char doBusyWait) {
+    delay_ms(1);
+    portd = cData; // Instruction on portd bus
+    
+    LCD_RS = isData; // Instruction is 0, Data is 1
+    LCD_RW = 0; // Write operation
+    
+    LCD_E = 0; // E to 0
+    delay_us(20);
+    LCD_E = 1; // E to 1
+    delay_us(20);
+    LCD_E = 0; // E to 0 to generate a falling edge
+    delay_us(20);
+    
+    //if (doBusyWait)
+    //  lcdBusyWait();
+}
+
+
+char lcdRead() {
+    char d;
+    // Make port an input
+    trisd = 0xFF;
+    LCD_RS = 0;
+    LCD_RW = 1; // Read operation
+    LCD_E = 1; // E to 1
+    d = portd;
+    LCD_E = 0; // E to 0
+    // Put back to output
+    trisd = 0;
+}
+
+void lcdInit() {
+    portd = 0;
+    trisd = 0;
+    LCD_RW = 0;
+    LCD_RS = 0;
+    LCD_E = 0;
+    delay_ms(40);
+
+    // Reset
+    lcdWrite(0, 3, 0);
+    delay_ms(5);
+    
+    // 0x30
+    lcdWrite(0, 0x30, 0);
+    delay_ms(5);
+    lcdWrite(0, 0x30, 0);
+    delay_ms(5);
+    lcdWrite(0, 0x30, 0);
+    delay_ms(5);
+    
+    // Function set - 001[DL],[N][F][FT1][FT0]
+    // DL=1 for 8 bit, N=1 for 2 lines, F=0 font 8 line, FT1/FT0=01 english/russian)
+    lcdWrite(0, 0x39, 1);
+    delay_ms(2);
+    
+    // Display on/off - 0000,1DCB
+    // D=1 for Display on, C=0 for cursor off, B=0 for blicking off
+    //lcdWrite(0, 0x0C, 1);
+    lcdWrite(0, 0x0E, 1);
+    delay_ms(2);
+    
+    // Display clear - 0000,0001
+    lcdWrite(0, 0x01, 1);
+    delay_ms(2);
+    
+    // Entry mode set - 0000,01[I/D]S
+    // I/D=1 for, S=0
+    // Move from left-to-right, no shifting
+    //lcdWrite(0, 0x06, 1);
+    lcdWrite(0, 0x80, 1);
+    delay_ms(5);
+
+    // Display clear - 0000,0001
+    lcdWrite(0, 0x01, 1);
+    delay_ms(2);
+}
+
+void lcdGoto(char col, char row) {
+    lcdWrite(0, 0x80 + (row * 4) + col, 1); // Goto position
+}
+
+void lcdBusyWait() {
+    while( lcdRead() & 0x80 ); // wait while busy set
+}*/
+
+/******************************************************
+  Called after rotary switch change is detected, used 
+  to display the approriate selected input
+*******************************************************/
+void showSource() {
+
+    lcd_clear();
+00FC  20F2  	CALL LCD_Clear_00000
+
+    if (test_bit(porta, 0)) {
+00FD  1C05  	BTFSS gbl_porta,0
+00FE  290F  	GOTO	label16
+010F        label16
+
+        lcd_gotoxy(0, 0);
+00FF  01AA  	CLRF LCD_GotoXy_00000_arg_x
+0100  01AB  	CLRF LCD_GotoXy_00000_arg_y
+0101  20E2  	CALL LCD_GotoXy_00000
+
+        lprintf("DAB");
+0102  3044  	MOVLW 0x44
+0103  00AC  	MOVWF CompTempVar565
+0104  3041  	MOVLW 0x41
+0105  00AD  	MOVWF CompTempVar565+D'1'
+0106  3042  	MOVLW 0x42
+0107  00AE  	MOVWF CompTempVar565+D'2'
+0108  01AF  	CLRF CompTempVar565+D'3'
+0109  3000  	MOVLW HIGH(CompTempVar565+D'0')
+010A  00AB  	MOVWF LCD_Printf_00000_arg_lcdptr+D'1'
+010B  302C  	MOVLW LOW(CompTempVar565+D'0')
+010C  00AA  	MOVWF LCD_Printf_00000_arg_lcdptr
+010D  20BE  	CALL LCD_Printf_00000
+
+    } else if (test_bit(porta, 1)) {
+010F  1C85  	BTFSS gbl_porta,1
+0110  292B  	GOTO	label17
+012B        label17
+
+        lcd_gotoxy(0, 0);
+0111  01AA  	CLRF LCD_GotoXy_00000_arg_x
+0112  01AB  	CLRF LCD_GotoXy_00000_arg_y
+0113  20E2  	CALL LCD_GotoXy_00000
+
+        lprintf("PC Audio");
+0114  3050  	MOVLW 0x50
+0115  00AC  	MOVWF CompTempVar567
+0116  3043  	MOVLW 0x43
+0117  00AD  	MOVWF CompTempVar567+D'1'
+0118  3020  	MOVLW 0x20
+0119  00AE  	MOVWF CompTempVar567+D'2'
+011A  3041  	MOVLW 0x41
+011B  00AF  	MOVWF CompTempVar567+D'3'
+011C  3075  	MOVLW 0x75
+011D  00B0  	MOVWF CompTempVar567+D'4'
+011E  3064  	MOVLW 0x64
+011F  00B1  	MOVWF CompTempVar567+D'5'
+0120  3069  	MOVLW 0x69
+0121  00B2  	MOVWF CompTempVar567+D'6'
+0122  306F  	MOVLW 0x6F
+0123  00B3  	MOVWF CompTempVar567+D'7'
+0124  01B4  	CLRF CompTempVar567+D'8'
+0125  3000  	MOVLW HIGH(CompTempVar567+D'0')
+0126  00AB  	MOVWF LCD_Printf_00000_arg_lcdptr+D'1'
+0127  302C  	MOVLW LOW(CompTempVar567+D'0')
+0128  00AA  	MOVWF LCD_Printf_00000_arg_lcdptr
+0129  20BE  	CALL LCD_Printf_00000
+
+    } else if (test_bit(porta, 2)) {
+012B  1D05  	BTFSS gbl_porta,2
+012C  294B  	GOTO	label18
+014B        label18
+
+        lcd_gotoxy(0, 0);
+012D  01AA  	CLRF LCD_GotoXy_00000_arg_x
+012E  01AB  	CLRF LCD_GotoXy_00000_arg_y
+012F  20E2  	CALL LCD_GotoXy_00000
+
+        lprintf("Chromecast");
+0130  3043  	MOVLW 0x43
+0131  00AC  	MOVWF CompTempVar569
+0132  3068  	MOVLW 0x68
+0133  00AD  	MOVWF CompTempVar569+D'1'
+0134  3072  	MOVLW 0x72
+0135  00AE  	MOVWF CompTempVar569+D'2'
+0136  306F  	MOVLW 0x6F
+0137  00AF  	MOVWF CompTempVar569+D'3'
+0138  306D  	MOVLW 0x6D
+0139  00B0  	MOVWF CompTempVar569+D'4'
+013A  3065  	MOVLW 0x65
+013B  00B1  	MOVWF CompTempVar569+D'5'
+013C  3063  	MOVLW 0x63
+013D  00B2  	MOVWF CompTempVar569+D'6'
+013E  3061  	MOVLW 0x61
+013F  00B3  	MOVWF CompTempVar569+D'7'
+0140  3073  	MOVLW 0x73
+0141  00B4  	MOVWF CompTempVar569+D'8'
+0142  3074  	MOVLW 0x74
+0143  00B5  	MOVWF CompTempVar569+D'9'
+0144  01B6  	CLRF CompTempVar569+D'10'
+0145  3000  	MOVLW HIGH(CompTempVar569+D'0')
+0146  00AB  	MOVWF LCD_Printf_00000_arg_lcdptr+D'1'
+0147  302C  	MOVLW LOW(CompTempVar569+D'0')
+0148  00AA  	MOVWF LCD_Printf_00000_arg_lcdptr
+0149  20BE  	CALL LCD_Printf_00000
+
+    } else {
+        lcd_gotoxy(0, 0);
+014B  01AA  	CLRF LCD_GotoXy_00000_arg_x
+014C  01AB  	CLRF LCD_GotoXy_00000_arg_y
+014D  20E2  	CALL LCD_GotoXy_00000
+
+        lprintf("Auxiliary");
+014E  3041  	MOVLW 0x41
+014F  00AC  	MOVWF CompTempVar571
+0150  3061  	MOVLW 0x61
+0151  00B2  	MOVWF CompTempVar571+D'6'
+0152  3069  	MOVLW 0x69
+0153  00AF  	MOVWF CompTempVar571+D'3'
+0154  00B1  	MOVWF CompTempVar571+D'5'
+0155  306C  	MOVLW 0x6C
+0156  00B0  	MOVWF CompTempVar571+D'4'
+0157  3072  	MOVLW 0x72
+0158  00B3  	MOVWF CompTempVar571+D'7'
+0159  3075  	MOVLW 0x75
+015A  00AD  	MOVWF CompTempVar571+D'1'
+015B  3078  	MOVLW 0x78
+015C  00AE  	MOVWF CompTempVar571+D'2'
+015D  3079  	MOVLW 0x79
+015E  00B4  	MOVWF CompTempVar571+D'8'
+015F  01B5  	CLRF CompTempVar571+D'9'
+0160  3000  	MOVLW HIGH(CompTempVar571+D'0')
+0161  00AB  	MOVWF LCD_Printf_00000_arg_lcdptr+D'1'
+0162  302C  	MOVLW LOW(CompTempVar571+D'0')
+0163  00AA  	MOVWF LCD_Printf_00000_arg_lcdptr
+0164  20BE  	CALL LCD_Printf_00000
+
+    }
+}
+010E  0008  	RETURN
+012A  0008  	RETURN
+014A  0008  	RETURN
+0165  0008  	RETURN
+
+
+/******************************************************
+  Called after timer 1 has counted enough times, used 
+  to unmute the speakers
+*******************************************************/
+void onTimer1() {
+
+    if (NODC_FAIL) {
+01D0  1283  	BCF STATUS, RP0
+01D1  1303  	BCF STATUS, RP1
+01D2  1C06  	BTFSS gbl_portb,0
+
+        // If DC fail is OK, unmute
+        // Enable the relay output
+        MUTEOUT = 1;        
+01D4  1685  	BSF gbl_porta,5
+
+
+        // Turn off the timer
+        t1con.TMR1ON = 0;
+01D5  1010  	BCF gbl_t1con,0
+
+        showSource();
+01D6  20FC  	CALL showSource_00000
+
+    }
+}
+01D3  0008  	RETURN
+01D7  0008  	RETURN
+
+
+/******************************************************
+  MAIN PROGRAM
+*******************************************************/
+void main()
+
+{
+    initialise();
+026C  21D8  	CALL initialise_00000
+
+    
+    // During start up, enable timer 1
+    t1con.TMR1ON = 1;
+026D  1410  	BSF gbl_t1con,0
+
+    
+    // Welcome message
+    lcd_gotoxy(0, 0);
+026E  01AA  	CLRF LCD_GotoXy_00000_arg_x
+026F  01AB  	CLRF LCD_GotoXy_00000_arg_y
+0270  20E2  	CALL LCD_GotoXy_00000
+
+    lprintf("Hello!");
+0271  3048  	MOVLW 0x48
+0272  00AC  	MOVWF CompTempVar575
+0273  3065  	MOVLW 0x65
+0274  00AD  	MOVWF CompTempVar575+D'1'
+0275  306C  	MOVLW 0x6C
+0276  00AE  	MOVWF CompTempVar575+D'2'
+0277  00AF  	MOVWF CompTempVar575+D'3'
+0278  306F  	MOVLW 0x6F
+0279  00B0  	MOVWF CompTempVar575+D'4'
+027A  3021  	MOVLW 0x21
+027B  00B1  	MOVWF CompTempVar575+D'5'
+027C  01B2  	CLRF CompTempVar575+D'6'
+027D  3000  	MOVLW HIGH(CompTempVar575+D'0')
+027E  00AB  	MOVWF LCD_Printf_00000_arg_lcdptr+D'1'
+027F  302C  	MOVLW LOW(CompTempVar575+D'0')
+0280  00AA  	MOVWF LCD_Printf_00000_arg_lcdptr
+0281  20BE  	CALL LCD_Printf_00000
+
+    lcd_gotoxy(0, 1);
+0282  01AA  	CLRF LCD_GotoXy_00000_arg_x
+0283  3001  	MOVLW 0x01
+0284  00AB  	MOVWF LCD_GotoXy_00000_arg_y
+0285  20E2  	CALL LCD_GotoXy_00000
+
+    lprintf("Just a moment...");
+0286  3020  	MOVLW 0x20
+0287  00B0  	MOVWF CompTempVar577+D'4'
+0288  00B2  	MOVWF CompTempVar577+D'6'
+0289  302E  	MOVLW 0x2E
+028A  00B9  	MOVWF CompTempVar577+D'13'
+028B  00BA  	MOVWF CompTempVar577+D'14'
+028C  00BB  	MOVWF CompTempVar577+D'15'
+028D  304A  	MOVLW 0x4A
+028E  00AC  	MOVWF CompTempVar577
+028F  3061  	MOVLW 0x61
+0290  00B1  	MOVWF CompTempVar577+D'5'
+0291  3065  	MOVLW 0x65
+0292  00B6  	MOVWF CompTempVar577+D'10'
+0293  306D  	MOVLW 0x6D
+0294  00B3  	MOVWF CompTempVar577+D'7'
+0295  00B5  	MOVWF CompTempVar577+D'9'
+0296  306E  	MOVLW 0x6E
+0297  00B7  	MOVWF CompTempVar577+D'11'
+0298  306F  	MOVLW 0x6F
+0299  00B4  	MOVWF CompTempVar577+D'8'
+029A  3073  	MOVLW 0x73
+029B  00AE  	MOVWF CompTempVar577+D'2'
+029C  3074  	MOVLW 0x74
+029D  00AF  	MOVWF CompTempVar577+D'3'
+029E  00B8  	MOVWF CompTempVar577+D'12'
+029F  3075  	MOVLW 0x75
+02A0  00AD  	MOVWF CompTempVar577+D'1'
+02A1  01BC  	CLRF CompTempVar577+D'16'
+02A2  3000  	MOVLW HIGH(CompTempVar577+D'0')
+02A3  00AB  	MOVWF LCD_Printf_00000_arg_lcdptr+D'1'
+02A4  302C  	MOVLW LOW(CompTempVar577+D'0')
+02A5  00AA  	MOVWF LCD_Printf_00000_arg_lcdptr
+02A6  20BE  	CALL LCD_Printf_00000
+
+    
+    while (1) {
+02A7        label30
+02E5  2AA7  	GOTO	label30
+
+        // Task scheduler
+        // If there are tasks to be performed, find out the
+        // most recent task from the array and execute it
+        while (cTask > 0) {
+02A7  0826  	MOVF gbl_cTask, W
+02A8  3C00  	SUBLW 0x00
+02A9  1803  	BTFSC STATUS,C
+02AA  2ACD  	GOTO	label34
+02CC  2AA7  	GOTO	label30
+02CD        label34
+
+            if (cTask.TASK_INT_EXT0) {
+02AB  1C26  	BTFSS gbl_cTask,0
+02AC  2AC1  	GOTO	label31
+02C1        label31
+
+                // A DC fault occurred - show on display
+                t1con.TMR1ON = 1; // Switch on the timer - will reset fault if it clears within 2 seconds
+02AD  1410  	BSF gbl_t1con,0
+
+                lcd_clear();
+02AE  20F2  	CALL LCD_Clear_00000
+
+                lprintf("FAULT");
+02AF  3046  	MOVLW 0x46
+02B0  00AC  	MOVWF CompTempVar579
+02B1  3041  	MOVLW 0x41
+02B2  00AD  	MOVWF CompTempVar579+D'1'
+02B3  3055  	MOVLW 0x55
+02B4  00AE  	MOVWF CompTempVar579+D'2'
+02B5  304C  	MOVLW 0x4C
+02B6  00AF  	MOVWF CompTempVar579+D'3'
+02B7  3054  	MOVLW 0x54
+02B8  00B0  	MOVWF CompTempVar579+D'4'
+02B9  01B1  	CLRF CompTempVar579+D'5'
+02BA  3000  	MOVLW HIGH(CompTempVar579+D'0')
+02BB  00AB  	MOVWF LCD_Printf_00000_arg_lcdptr+D'1'
+02BC  302C  	MOVLW LOW(CompTempVar579+D'0')
+02BD  00AA  	MOVWF LCD_Printf_00000_arg_lcdptr
+02BE  20BE  	CALL LCD_Printf_00000
+
+                cTask.TASK_INT_EXT0 = 0;
+02BF  1026  	BCF gbl_cTask,0
+
+            } else if (cTask.TASK_TIMER1) {
+02C0  2AA7  	GOTO	label30
+02C1  1FA6  	BTFSS gbl_cTask,7
+02C2  2AC6  	GOTO	label32
+02C6        label32
+
+                onTimer1(); // Timer 1 has finished counting
+02C3  21D0  	CALL onTimer1_00000
+
+                cTask.TASK_TIMER1 = 0;
+02C4  13A6  	BCF gbl_cTask,7
+
+            } else if (cTask.TASK_I2C_RECV) {
+02C5  2AA7  	GOTO	label30
+02C6  1F26  	BTFSS gbl_cTask,6
+02C7  2AA7  	GOTO	label30
+
+                // Only process DAB LCD commands if no fault
+                if (NODC_FAIL)
+02C8  1C06  	BTFSS gbl_portb,0
+02C9  2ACB  	GOTO	label33
+02CB        label33
+
+                    i2cProcess();
+02CA  222D  	CALL i2cProcess_00000
+
+                cTask.TASK_I2C_RECV = 0;
+02CB  1326  	BCF gbl_cTask,6
+
+            }            
+        }
+        
+        // Check the selected input (unless DC fault is present, or muted)
+        if (NODC_FAIL && MUTEOUT) {
+02CD  1C06  	BTFSS gbl_portb,0
+02CE  2AA7  	GOTO	label30
+02CF  1E85  	BTFSS gbl_porta,5
+02D0  2AA7  	GOTO	label30
+
+            // Get porta status for active input
+            iActiveInput = porta & 0b00000111;
+02D1  3007  	MOVLW 0x07
+02D2  0505  	ANDWF gbl_porta, W
+02D3  00A8  	MOVWF gbl_iActiveInput
+
+            
+            if (iActiveInput != iActiveInputPrev) {
+02D4  0829  	MOVF gbl_iActiveInputPrev, W
+02D5  0628  	XORWF gbl_iActiveInput, W
+02D6  1903  	BTFSC STATUS,Z
+02D7  2ADE  	GOTO	label35
+02DE        label35
+
+                // debounce
+                delay_ms(50);
+02D8  3032  	MOVLW 0x32
+02D9  00AA  	MOVWF delay_ms_00000_arg_del
+02DA  2010  	CALL delay_ms_00000
+
+                iActiveInput = porta & 0b00000111;
+02DB  3007  	MOVLW 0x07
+02DC  0505  	ANDWF gbl_porta, W
+02DD  00A8  	MOVWF gbl_iActiveInput
+
+            }
+            
+            // if still different, show the new input on the LCD
+            if (iActiveInput != iActiveInputPrev) {
+02DE  0829  	MOVF gbl_iActiveInputPrev, W
+02DF  0628  	XORWF gbl_iActiveInput, W
+02E0  1903  	BTFSC STATUS,Z
+02E1  2AA7  	GOTO	label30
+
+                iActiveInputPrev = iActiveInput;
+02E2  0828  	MOVF gbl_iActiveInput, W
+02E3  00A9  	MOVWF gbl_iActiveInputPrev
+
+                showSource();
+02E4  20FC  	CALL showSource_00000
+
+            }
+        }
+    }
+} 
+
+
+////////////////////////////////////////
+// Code with no source :-)
+////////////////////////////////////////
+0000  2AE6  	GOTO	_startup
+
+0004  00FF  	MOVWF Int1Context
+0005  0E03  	SWAPF STATUS, W
+0006  1283  	BCF STATUS, RP0
+0007  1303  	BCF STATUS, RP1
+0008  00A0  	MOVWF Int1BContext
+0009  0E0A  	SWAPF PCLATH, W
+000A  00A1  	MOVWF Int1BContext+D'1'
+000B  0E04  	SWAPF FSR, W
+000C  00A2  	MOVWF Int1BContext+D'2'
+000D  118A  	BCF PCLATH,3
+000E  120A  	BCF PCLATH,4
+000F  2AF1  	GOTO	interrupt
+0010        delay_ms_00000
+0010        ; { delay_ms ; function begin
+0010  08AA  	MOVF delay_ms_00000_arg_del, F
+0011  1D03  	BTFSS STATUS,Z
+0012  2814  	GOTO	label1
+0013  0008  	RETURN
+0014        label1
+0014  30F9  	MOVLW 0xF9
+0015        label2
+0015  0000  	NOP
+0016  0000  	NOP
+0017  3EFF  	ADDLW 0xFF
+0018  1D03  	BTFSS STATUS,Z
+0019  2815  	GOTO	label2
+001A  0000  	NOP
+001B  0000  	NOP
+001C  0000  	NOP
+001D  0BAA  	DECFSZ delay_ms_00000_arg_del, F
+001E  2814  	GOTO	label1
+001F  0008  	RETURN
+0020        ; } delay_ms function end
+
+0020        delay_10us_00000
+0020        ; { delay_10us ; function begin
+0020  08AA  	MOVF delay_10us_00000_arg_del, F
+0021  1D03  	BTFSS STATUS,Z
+0022  2824  	GOTO	label3
+0023  0008  	RETURN
+0024        label3
+0024  3002  	MOVLW 0x02
+0025        label4
+0025  0000  	NOP
+0026  3EFF  	ADDLW 0xFF
+0027  1D03  	BTFSS STATUS,Z
+0028  2825  	GOTO	label4
+0029  0000  	NOP
+002A  0000  	NOP
+002B  0BAA  	DECFSZ delay_10us_00000_arg_del, F
+002C  2824  	GOTO	label3
+002D  0008  	RETURN
+002E        ; } delay_10us function end
+
+
+
+
+
+
+
+02E6        _startup
+
+02EE  118A  	BCF PCLATH,3
+02EF  120A  	BCF PCLATH,4
+02F0  2A6C  	GOTO	main
+
+
+
+2007  3FBA  	DW 0x3FBA

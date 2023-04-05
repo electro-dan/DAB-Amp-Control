@@ -1,0 +1,27 @@
+// SourceBoost Linker Function Resource Usage Dump
+
+#GLOBAL:"global",line = 0,ram = 114.0,rom = 0;
+i2cProcess(void):"Z:\home\dan\PIC\DAB-Amp-Control\DABControl.c",line = 254,ram = 2.0,rom = 63;
+i2cBufferRead(unsigned char*):"Z:\home\dan\PIC\DAB-Amp-Control\DABControl.c",line = 60,ram = 5.0,rom = 35;
+LCD_Function(unsigned char):"C:\Program Files\SourceBoost\include\lcd_driver.h",line = 757,ram = 1.0,rom = 5;
+LCD_Write(unsigned char):"C:\Program Files\SourceBoost\include\lcd_driver.h",line = 423,ram = 1.1,rom = 19;
+i2cBufferWrite(unsigned char):"Z:\home\dan\PIC\DAB-Amp-Control\DABControl.c",line = 49,ram = 3.0,rom = 26;
+initialise(void):"Z:\home\dan\PIC\DAB-Amp-Control\DABControl.c",line = 74,ram = 1.0,rom = 85;
+LCD_Setup(void):"C:\Program Files\SourceBoost\include\lcd_driver.h",line = 459,ram = 0.1,rom = 66;
+LCD_RawWriteNibble(unsigned char):"C:\Program Files\SourceBoost\include\lcd_driver.h",line = 290,ram = 0.0,rom = 23;
+LCD_Read(void):"C:\Program Files\SourceBoost\include\lcd_driver.h",line = 213,ram = 2.0,rom = 39;
+LCD_RawWrite(unsigned char):"C:\Program Files\SourceBoost\include\lcd_driver.h",line = 367,ram = 2.1,rom = 37;
+interrupt(void):"Z:\home\dan\PIC\DAB-Amp-Control\DABControl.c",line = 155,ram = 5.0,rom = 83;
+showSource(void):"Z:\home\dan\PIC\DAB-Amp-Control\DABControl.c",line = 386,ram = 11.0,rom = 106;
+LCD_Clear(void):"C:\Program Files\SourceBoost\include\lcd_driver.h",line = 449,ram = 0.0,rom = 10;
+LCD_GotoXy(unsigned char,unsigned char):"C:\Program Files\SourceBoost\include\lcd_driver.h",line = 746,ram = 3.0,rom = 16;
+LCD_Printf(unsigned char*):"C:\Program Files\SourceBoost\include\lcd_driver.h",line = 553,ram = 5.0,rom = 36;
+onTimer1(void):"Z:\home\dan\PIC\DAB-Amp-Control\DABControl.c",line = 407,ram = 0.0,rom = 8;
+main(void):"Z:\home\dan\PIC\DAB-Amp-Control\DABControl.c",line = 423,ram = 17.0,rom = 122;
+delay_10us(unsigned char):"NoSourceFile",line = 0,ram = 0.0,rom = 14;
+delay_ms(unsigned char):"NoSourceFile",line = 0,ram = 0.0,rom = 16;
+_startup(void):"NoSourceFile",line = 0,ram = 0.0,rom = 11;
+#HEAP_BLOCK: 0, 400, 96;
+#HEAP_BLOCK: 1, 160, 80;
+#HEAP_BLOCK: 2, 75, 37;
+#HEAP_BLOCK: 3, 119, 8;
