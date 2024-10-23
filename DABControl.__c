@@ -1,8 +1,9 @@
 [Settings]
 Active Compiler=BoostC
 Target=PIC16F77
-Active Directory=Z:\home\dan\PIC\DAB-Amp-Control\
+Active Directory=Z:\home\dan\GIT\DAB-Amp-Control\
 Active Config=Release
+Config=0
 [Files]
 File0=DABControl.c
 Count=2

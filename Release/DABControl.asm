@@ -799,7 +799,7 @@ initialise_00000
 	BCF STATUS, RP0
 	MOVWF gbl_rcsta
 	CLRF gbl_iRS232Index
-	MOVLW 0x64
+	MOVLW 0xC8
 	MOVWF delay_ms_00000_arg_del
 	CALL delay_ms_00000
 	BSF gbl_intcon,4

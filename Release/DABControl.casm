@@ -1466,8 +1466,8 @@ void initialise() {
 
     
     // Slight delay before initialising LCD and interrupts
-    delay_ms(100);
-021C  3064  	MOVLW 0x64
+    delay_ms(200);
+021C  30C8  	MOVLW 0xC8
 021D  00AA  	MOVWF delay_ms_00000_arg_del
 021E  2010  	CALL delay_ms_00000
 

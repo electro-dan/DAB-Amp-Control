@@ -125,7 +125,7 @@ void initialise() {
     iRS232Index = 0;
     
     // Slight delay before initialising LCD and interrupts
-    delay_ms(100);
+    delay_ms(200);
     
     // Setup for RB0 Interrupt [DC fail]
     intcon.INTE = 1; // RB2 Interrupt (for DC Fail)
